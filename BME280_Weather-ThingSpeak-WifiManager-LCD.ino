@@ -2,6 +2,7 @@
 //
 // Change History:
 // v1 First cut from existing other code.  Using NodeMCU 8266 Board.
+// v2 Updated and made better note of library dependencies.
 //
 //==========================================================
 //  NodeMCU GPIO Pins:
@@ -64,22 +65,7 @@
 //  any domain you try to access redirected to the configuration portal
 //  choose one of the access points scanned, enter password, click save
 //  ESP will try to connect. If successful, it relinquishes control back to your app. If not, reconnect to AP and reconfigure.
-//==== WiFi Manager Includes ===============================
-#include <ESP8266WiFi.h>          // https://github.com/esp8266/Arduino
-#include <WiFiUdp.h>              // For NTP service
-#include <DNSServer.h>
-#include <ESP8266WebServer.h>
-#include <WiFiManager.h>          // https://github.com/tzapu/WiFiManager.git
-//for LED status
-#include <Ticker.h>
 
-
-//==== BME280 Includes =====================================
-#include <BME280I2C.h>
-#include <Wire.h>                 // Needed for legacy versions of Arduino.
-
-//==== ThingSpeak Includes =================================
-#include "ThingSpeak.h"
 
 //==== Password Includes ===================================
 #include "BME280_Weather-ThingSpeak-WifiManager-LCD.h"
@@ -111,24 +97,42 @@
 #include <hd44780.h>
 #include <hd44780ioClass/hd44780_I2Cexp.h> // i2c expander i/o class header
 
-
-//====  END Includes =======================================
-
-/* ==== General Defines ==== */
-#define SERIAL_BAUD 115200
-#define WIFIRESETBUTTON D3
-/* ==== END Defines ==== */
-
-/* ==== BME280 Global Variables ==== */
-  BME280I2C bme;                // Default : forced mode, standby time = 1000 ms
-                                // Oversampling = pressure ×1, temperature ×1, humidity ×1, filter off,
+//==== BME280 Global Variables =============================
+  //  Recommended Modes -
+  //  Based on Bosch BME280I2C environmental sensor data sheet.
+  //
+  //  Weather Monitoring :
+  //    forced mode, 1 sample/minute
+  //    pressure ×1, temperature ×1, humidity ×1, filter off
+  //    Current Consumption =  0.16 μA
+  //    RMS Noise = 3.3 Pa/30 cm, 0.07 %RH
+  //    Data Output Rate 1/60 Hz
+  BME280I2C::Settings settings(
+    BME280::OSR_X1,
+    BME280::OSR_X1,
+    BME280::OSR_X1,
+    BME280::Mode_Forced,
+    BME280::StandbyTime_1000ms,
+    BME280::Filter_Off,
+    BME280::SpiEnable_False,
+    BME280I2C::I2CAddr_0x76       // I2C address. I2C specific.
+  );
+  BME280I2C bme(settings);  //Use the defaults
   bool metric = true;
   float temperature(NAN), humidity(NAN), pressure(NAN);
+//====  END Includes =======================================
 
-/* ==== BME280 WiFiManager Global Variables ==== */
+//==== General Defines =====================================
+#define SERIAL_BAUD 115200
+#define WIFIRESETBUTTON D3
+//==== END Defines =========================================
+
+
+
+//==== BME280 WiFiManager Global Variables =================
   Ticker ticker;
 
-/* ==== NTP  Global Variables ==== */
+//==== NTP  Global Variables ===============================
   unsigned int localPort = 2390;            // local port to listen for UDP packets
   
   // Don't hardwire the IP address or we won't get the benefits of the pool.
@@ -143,7 +147,16 @@
   
   WiFiUDP udp;                              // A UDP instance to let us send and receive packets over UDP
 
-/* ====  ThingSpeak Global Variables ==== */
+  struct MYTIME{
+    int h;
+    int m;
+    int s; 
+  };
+  MYTIME mt = {0, 0, 0};                    // Use this to figure out when to have the display on.
+  MYTIME ont = {6,0,0};
+  MYTIME offt = {20,0,0};
+
+//====  ThingSpeak Global Variables ========================
   WiFiClient client;                        // Need this for ThingSpeak?
   uint32_t delayMS;
   // Set up some time variables
@@ -152,18 +165,18 @@
   // 5 minutes = 1000 x 60 x 5 = 300000
   #define THINGSPEAKDELAY 300000            // This is how long between measures.
 
-/* ====  LCD Global Variables ==== */
+//====  LCD Global Variables ===============================
   hd44780_I2Cexp lcd(0x27); // declare lcd object: auto locate & config exapander chip
   
   // LCD geometry
   const int LCD_ROWS = 2;
   const int LCD_COLS = 16;
 
-/* ====  WiFiManager Variables ==== */
+//====  WiFiManager Variables ==============================
   // Really not pretty passing around globals like this.  Should review and do as pointers etc.
   WiFiManager wifiManager;
   
-/* ==== END Global Variables ==== */
+//==== END Global Variables ================================
 
 
 //==========================================================
@@ -282,21 +295,14 @@ void tick(){
 //==========================================================
 void takeBME280Reading(void){
   // TNS - Notionally we are in "forced mode" which means we need to trigger the read then wait 8ms
-  bme.setMode(0x01);
+  //bme.setMode(0x01);
   delay(10);
  
-  uint8_t pressureUnit(3);                                           // unit: B000 = Pa, B001 = hPa, B010 = Hg, B011 = atm, B100 = bar, B101 = torr, B110 = N/m^2, B111 = psi
-  bme.read(pressure, temperature, humidity, metric, pressureUnit);   // Parameters: (float& pressure, float& temp, float& humidity, bool celsius = false, uint8_t pressureUnit = 0x0)
-  /*
-  Keep in mind the temperature is used for humidity and
-  pressure calculations. So it is more effcient to read
-  temperature, humidity and pressure all together.
-  */  
-  /* Alternatives to ReadData():
-  float temp(bool celsius = false);
-  float pres(uint8_t unit = 0);
-  float hum();
-  */  
+  BME280::TempUnit tempUnit(BME280::TempUnit_Celsius);
+  BME280::PresUnit presUnit(BME280::PresUnit_hPa);
+ 
+  // Parameters: (float& pressure, float& temp, float& humidity, bool celsius = false, uint8_t pressureUnit = 0x0) 
+  bme.read(pressure, temperature, humidity, tempUnit, presUnit);   
   
 }
 
@@ -316,17 +322,20 @@ void printBME280Data(Stream* client){
 }
 
 
-/* =============================================== */
+//==========================================================
 void printBME280CalculatedData(Stream* client){
-  float altitude = bme.alt(metric);
-  float dewPoint = bme.dew(metric);
-  client->print("\t\tAltitude: ");
-  client->print(altitude);
-  client->print((metric ? "m" : "ft"));
-  client->print("\t\tDew point: ");
-  client->print(dewPoint);
-  client->println("°"+ String(metric ? 'C' :'F'));
+  EnvironmentCalculations::AltitudeUnit envAltUnit  =  EnvironmentCalculations::AltitudeUnit_Meters;
+  EnvironmentCalculations::TempUnit     envTempUnit =  EnvironmentCalculations::TempUnit_Celsius;
 
+  float absHum = EnvironmentCalculations::AbsoluteHumidity(temperature, humidity, envTempUnit);
+
+  client->print("\t\tHeat Index: ");
+  float heatIndex = EnvironmentCalculations::HeatIndex(temperature, humidity, envTempUnit);
+  client->print(heatIndex);
+  client->print("°"+ String(envTempUnit == EnvironmentCalculations::TempUnit_Celsius ? "C" :"F"));
+
+  client->print("\t\tAbsolute Humidity: ");
+  client->println(absHum);
 }
 
 //==========================================================
@@ -343,7 +352,7 @@ void displayLCDBME280Data(void){
   lcd.print("% RH");  
 }
 
-/* =============================================== */
+//==========================================================
 void getNTPTime()
 {
   //get a random server from the pool
@@ -399,15 +408,14 @@ void getNTPTime()
       Serial.print('0');
     }
     Serial.println(epoch % 60); // print the second
-    // TNS: Using casts relatively safely given the calculation being asked for and the 
-    // expected return values.
-    //hours = static_cast<int>((epoch  % 86400L) / 3600);
-    //minutes = static_cast<int>((epoch  % 3600) / 60);
-    //seconds = static_cast<int>(epoch % 60);
+    // Keep track of time for screen blanking
+    mt.h = (epoch  % 86400L) / 3600;
+    mt.m = (epoch  % 3600) / 60;
+    mt.s = epoch % 60;
   }
 }
 
-/* =============================================== */
+//==========================================================
 // send an NTP request to the time server at the given address
 unsigned long sendNTPpacket(IPAddress& address)
 {
@@ -433,13 +441,36 @@ unsigned long sendNTPpacket(IPAddress& address)
   udp.endPacket();
 }
 
-
+//==========================================================
 // fatalError() - loop & blink an error code
 void fatalError(int ecode)
 {
   hd44780::fatalError(ecode); // does not return
 }
 /* ==== END Functions ==== */
+
+//========================================================== 
+// Check for day period when we do want the display active.
+// Globals we use are MYTIME mt, ont, offt
+// Disable this by setting ont == offt
+bool isDisplayTime(void)
+{
+  // Convert the structs to simple integers
+  unsigned long mtsecs = mt.h*60*60 + mt.m*60 +mt.s;
+  unsigned long ontsecs = ont.h*60*60 + ont.m*60 +ont.s;
+  unsigned long offtsecs = offt.h*60*60 + offt.m*60 +offt.s;
+
+  String t = "Daylight check: mt " + String(mtsecs) + ":ont " + String(ontsecs) + ":offt " + String(offtsecs);
+  Serial.println(t);  
+
+  if (ontsecs == offtsecs){return true;}
+  if (mtsecs > ontsecs & mtsecs < offtsecs) {return true;}
+
+  // OK we should have the display off
+  Serial.println("Display in night mode.");
+  return false;
+}
+
 
 
 //==========================================================
@@ -449,10 +480,9 @@ void setup() {
   Serial.begin(SERIAL_BAUD);
   while(!Serial) {} // Wait
 
-  // Use the template begin(int SDA, int SCL);
-  // SDA = D2 = GPIO4
-  // SCL = D1 = GPIO5
-  while(!bme.begin(SDA,SCL)){
+  // Start the BME280 Sensor
+  Wire.begin();
+  while(!bme.begin()){
     Serial.println("Could not find BME280 sensor!");
     delay(1000);
   }
@@ -527,7 +557,11 @@ void loop() {
     takeBME280Reading();
     printBME280Data(&Serial);
     printBME280CalculatedData(&Serial);
-    displayLCDBME280Data();
+    if (isDisplayTime()){
+      displayLCDBME280Data();
+    }else{
+      lcd.noBacklight();
+    }
     // Write it to the CLoud
     writeThingSpeak();
 
@@ -547,8 +581,3 @@ void loop() {
   }
 }
 /* ==== End Loop ==== */
-
-
-
-
-
